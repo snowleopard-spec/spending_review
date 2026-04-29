@@ -1,0 +1,19 @@
+# Virtual environment
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Local config and data — privacy
+config/
+data/
