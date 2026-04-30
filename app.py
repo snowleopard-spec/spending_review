@@ -18,6 +18,7 @@ from accounts import load_accounts
 from transaction_history import load_history_mapping, append_to_history, DEFAULT_PATH as HISTORY_PATH
 from parsers.format_a import parse as parse_format_a
 from parsers.format_b import parse as parse_format_b
+from parsers.format_c import parse as parse_format_c
 
 # --- Page config ---
 st.set_page_config(page_title="Spending Review", layout="wide")
@@ -121,6 +122,7 @@ MAPPING_PATH = "config/mapping.json"
 PARSERS = {
     "Format A": parse_format_a,
     "Format B": parse_format_b,
+    "Format C": parse_format_c,
 }
 
 # Load account → format mapping. Fail loud at startup so misconfiguration
@@ -240,7 +242,7 @@ st.header("Upload Statements")
 
 uploaded = st.file_uploader(
     "Drop one or more statement files",
-    type=["xlsx", "csv"],
+    type=["xlsx", "xls", "csv"],
     accept_multiple_files=True,
 )
 
