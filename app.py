@@ -21,6 +21,7 @@ from parsers.format_a import parse as parse_format_a
 from parsers.format_b import parse as parse_format_b
 from parsers.format_c import parse as parse_format_c
 from parsers.format_d import parse as parse_format_d
+from parsers.format_e import parse as parse_format_e
 
 # --- Page config ---
 st.set_page_config(page_title="Spending Review", layout="wide")
@@ -126,6 +127,7 @@ PARSERS = {
     "Format B": parse_format_b,
     "Format C": parse_format_c,
     "Format D": parse_format_d,
+    "Format E": parse_format_e,
 }
 
 # Load account → format mapping. Fail loud at startup so misconfiguration
