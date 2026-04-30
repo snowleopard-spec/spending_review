@@ -94,6 +94,21 @@ st.markdown("""
     [data-testid="stDataFrameResizable"] {
         background-color: white !important;
     }
+
+    /* Expander headers — default to a darker cream than the page (the colour
+       that previously only appeared on hover), hover to deeper still for
+       click affordance. Targets the summary element of details-based expanders
+       and the data-testid="stExpander" wrapper. */
+    [data-testid="stExpander"] details summary,
+    [data-testid="stExpander"] summary {
+        background-color: #E0D5C4 !important;
+        border-radius: 4px !important;
+        transition: background-color 0.15s ease !important;
+    }
+    [data-testid="stExpander"] details summary:hover,
+    [data-testid="stExpander"] summary:hover {
+        background-color: #C9BBA3 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -162,16 +177,18 @@ def compile_statements(uploaded_files, file_accounts: dict) -> pd.DataFrame:
 
     df = pd.concat(frames, ignore_index=True)
 
-    # Dedupe on (date, amount, description). Account is intentionally NOT in
-    # the dedupe key — if the same merchant charge appears in two accounts on
-    # the same day for the same amount, that's almost certainly a duplicate
-    # (same statement uploaded twice under different account labels), not two
-    # genuine charges. Keep first occurrence.
-    before = len(df)
-    df = df.drop_duplicates(subset=["date", "amount", "description"]).reset_index(drop=True)
-    st.session_state.duplicates_removed = before - len(df)
+    # Mark duplicates on (date, amount, description) instead of dropping them.
+    # First occurrence keeps duplicate=False; subsequent ones get True. This
+    # lets the dashboard hide them from analysis (df_visible) while still
+    # showing the user *which* rows were treated as duplicates in a panel.
+    # Account is intentionally NOT in the dedupe key — if the same merchant
+    # charge appears in two accounts on the same day for the same amount, it's
+    # almost certainly a re-upload, not two genuine charges.
+    df["duplicate"] = df.duplicated(subset=["date", "amount", "description"], keep="first")
+    st.session_state.duplicates_removed = int(df["duplicate"].sum())
 
-    # Drop refunds / payments
+    # Drop refunds / payments. Both originals and duplicates get this filter
+    # applied — a duplicate refund is still a refund and we don't analyse it.
     before = len(df)
     df = df[df["amount"] > 0].reset_index(drop=True)
     st.session_state.dropped_negatives = before - len(df)
@@ -298,7 +315,7 @@ if st.session_state.compiled is not None:
         value=(min_date, max_date),
         min_value=min_date,
         max_value=max_date,
-        format="YYYY-MM-DD",
+        format="DD/MM/YYYY",
         label_visibility="collapsed",
     )
 
@@ -309,6 +326,14 @@ if st.session_state.compiled is not None:
     else:
         # User is mid-selection (only picked start, not end) — show full range
         start_date, end_date = min_date, max_date
+
+    # Active range caption in the user's preferred dd-mmm-yy format.
+    # Streamlit's date_input doesn't support custom abbreviated-month formats,
+    # so we render the active range below it as a caption.
+    fmt = "%d-%b-%y"
+    st.caption(
+        f"Showing **{start_date.strftime(fmt)} → {end_date.strftime(fmt)}**"
+    )
 
     # Apply date filter to the full DataFrame. Everything downstream
     # (excluded filter, dashboard view, downloads) works off this.
@@ -330,8 +355,13 @@ if st.session_state.compiled is not None:
         st.warning(f"Could not load category exclusions: {e}")
         excluded = set()
 
+    # df_dated holds everything in the date range INCLUDING duplicates — used
+    # by the duplicates panel only. Downloads and dashboard exclude duplicates.
+    df_dated = df_full
+    df_full = df_dated[~df_dated["duplicate"]].reset_index(drop=True)
+
     # df is the dashboard view (excluded categories hidden);
-    # df_full is what downloads use (everything within the date range).
+    # df_full is what downloads use (everything within the date range, deduped).
     if excluded:
         df = df_full[~df_full["category"].isin(excluded)].reset_index(drop=True)
     else:
@@ -353,14 +383,6 @@ if st.session_state.compiled is not None:
         st.session_state.dropped_negatives,
         help="Counted across the entire upload, not just the selected date range.",
     )
-
-    # Show the active date range so it's always clear what's being summarised.
-    is_full_range = (start_date == min_date) and (end_date == max_date)
-    if not is_full_range:
-        st.caption(
-            f"Showing {start_date.isoformat()} to {end_date.isoformat()}. "
-            f"Upload covers {min_date.isoformat()} to {max_date.isoformat()}."
-        )
 
     if st.session_state.duplicates_removed > 0:
         st.caption(
@@ -519,6 +541,35 @@ if st.session_state.compiled is not None:
                     "amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
                     "description": "Description",
                     "category": "Category",
+                    "account": "Account",
+                },
+            )
+
+    # --- Duplicates section ---
+    # Duplicates are flagged but kept in the data so we can show them here.
+    # They're excluded from analysis, downloads, and other panels — this is
+    # the only place they surface, scoped to the active date range.
+    duplicates_df = df_dated[df_dated["duplicate"]][
+        ["date", "description", "amount", "account"]
+    ].reset_index(drop=True)
+
+    with st.expander(f"Duplicate transactions ({len(duplicates_df)})", expanded=False):
+        if duplicates_df.empty:
+            st.info("No duplicate transactions in the selected range.")
+        else:
+            st.markdown(
+                "These rows were detected as duplicates of earlier rows on the "
+                "same date with the same amount and description, and excluded "
+                "from analysis. Common cause: uploading the same statement twice."
+            )
+            st.dataframe(
+                duplicates_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                    "amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
+                    "description": "Description",
                     "account": "Account",
                 },
             )
