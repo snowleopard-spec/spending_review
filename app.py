@@ -14,6 +14,7 @@ import streamlit as st
 
 from categorise import categorise_dataframe, load_mapping, UNCATEGORISED
 from categories import load_categories
+from accounts import load_accounts
 from parsers.format_a import parse as parse_format_a
 from parsers.format_b import parse as parse_format_b
 
@@ -106,47 +107,64 @@ PARSERS = {
     "Format B": parse_format_b,
 }
 
+# Load account → format mapping. Fail loud at startup so misconfiguration
+# surfaces immediately rather than mid-flow.
+try:
+    ACCOUNTS = load_accounts(valid_formats=set(PARSERS.keys()))
+except (FileNotFoundError, ValueError) as e:
+    st.error(f"**Configuration error:** {e}")
+    st.stop()
+
 # --- Session state ---
 for key, default in [
     ("compiled", None),
     ("dropped_negatives", 0),
     ("duplicates_removed", 0),
-    ("file_formats", {}),       # file_id → format name
-    ("last_format", None),      # last format chosen, used as default for new files
+    ("file_accounts", {}),       # file_id → account name
+    ("last_account", None),      # last account chosen, used as default for new files
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 
 # --- Helpers ---
-def compile_statements(uploaded_files, file_formats: dict) -> pd.DataFrame:
+def compile_statements(uploaded_files, file_accounts: dict) -> pd.DataFrame:
     """
-    Parse all uploaded files using their selected formats, concatenate,
+    Parse all uploaded files using their selected accounts, concatenate,
     dedupe, drop negatives, categorise.
 
     Args:
         uploaded_files: list of Streamlit UploadedFile objects.
-        file_formats: dict mapping uploader file_id → format name.
+        file_accounts: dict mapping uploader file_id → account name.
+
+    Adds an 'account' column derived from the user's per-file selection.
     """
     frames = []
     for uf in uploaded_files:
-        format_name = file_formats.get(uf.file_id)
-        if format_name is None or format_name not in PARSERS:
-            st.error(f"No format selected for '{uf.name}'.")
+        account = file_accounts.get(uf.file_id)
+        if account is None or account not in ACCOUNTS:
+            st.error(f"No account selected for '{uf.name}'.")
             return None
+        format_name = ACCOUNTS[account]
         parser_func = PARSERS[format_name]
         try:
-            frames.append(parser_func(uf.getvalue(), uf.name))
+            parsed = parser_func(uf.getvalue(), uf.name)
         except ValueError as e:
-            st.error(f"Failed to parse '{uf.name}' as {format_name}: {e}")
+            st.error(f"Failed to parse '{uf.name}' as {account} ({format_name}): {e}")
             return None
+        parsed["account"] = account
+        frames.append(parsed)
 
     if not frames:
         return None
 
     df = pd.concat(frames, ignore_index=True)
 
-    # Dedupe on (date, amount, description)
+    # Dedupe on (date, amount, description). Account is intentionally NOT in
+    # the dedupe key — if the same merchant charge appears in two accounts on
+    # the same day for the same amount, that's almost certainly a duplicate
+    # (same statement uploaded twice under different account labels), not two
+    # genuine charges. Keep first occurrence.
     before = len(df)
     df = df.drop_duplicates(subset=["date", "amount", "description"]).reset_index(drop=True)
     st.session_state.duplicates_removed = before - len(df)
@@ -187,43 +205,43 @@ uploaded = st.file_uploader(
     accept_multiple_files=True,
 )
 
-# Garbage-collect format memory for files no longer in the uploader
+# Garbage-collect account memory for files no longer in the uploader
 if uploaded is not None:
     current_ids = {uf.file_id for uf in uploaded}
-    st.session_state.file_formats = {
-        fid: fmt for fid, fmt in st.session_state.file_formats.items()
+    st.session_state.file_accounts = {
+        fid: acct for fid, acct in st.session_state.file_accounts.items()
         if fid in current_ids
     }
 
-# Render per-file format selectors
+# Render per-file account selectors
 if uploaded:
-    st.markdown("**Select format per file**")
-    format_options = list(PARSERS.keys())
+    st.markdown("**Select account per file**")
+    account_options = list(ACCOUNTS.keys())
 
     for uf in uploaded:
-        # Default each file's format to: previously chosen for this file > last
-        # format the user picked > first format in the list.
-        existing = st.session_state.file_formats.get(uf.file_id)
-        default = existing or st.session_state.last_format or format_options[0]
-        default_idx = format_options.index(default) if default in format_options else 0
+        # Default each file's account to: previously chosen for this file >
+        # last account the user picked > first account in the config.
+        existing = st.session_state.file_accounts.get(uf.file_id)
+        default = existing or st.session_state.last_account or account_options[0]
+        default_idx = account_options.index(default) if default in account_options else 0
 
-        col_name, col_format = st.columns([3, 1])
+        col_name, col_account = st.columns([3, 1])
         with col_name:
             st.markdown(f"📄 `{uf.name}`")
-        with col_format:
+        with col_account:
             chosen = st.selectbox(
-                "Format",
-                format_options,
+                "Account",
+                account_options,
                 index=default_idx,
-                key=f"format_{uf.file_id}",
+                key=f"account_{uf.file_id}",
                 label_visibility="collapsed",
             )
-            st.session_state.file_formats[uf.file_id] = chosen
-            st.session_state.last_format = chosen
+            st.session_state.file_accounts[uf.file_id] = chosen
+            st.session_state.last_account = chosen
 
 if st.button("Compile", type="primary", disabled=not uploaded):
     with st.spinner("Parsing and categorising..."):
-        result = compile_statements(uploaded, st.session_state.file_formats)
+        result = compile_statements(uploaded, st.session_state.file_accounts)
         if result is not None:
             st.session_state.compiled = result
 
@@ -333,13 +351,22 @@ if st.session_state.compiled is not None:
     # --- Categorised transactions ---
     st.header("Categorised Transactions")
 
-    categories_in_data = ["All"] + sorted(df["category"].unique().tolist())
-    chosen_cat = st.selectbox("Filter by category", categories_in_data)
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        categories_in_data = ["All"] + sorted(df["category"].unique().tolist())
+        chosen_cat = st.selectbox("Filter by category", categories_in_data)
+    with fc2:
+        accounts_in_data = ["All"] + sorted(df["account"].unique().tolist())
+        chosen_acct = st.selectbox("Filter by account", accounts_in_data)
 
-    view = df if chosen_cat == "All" else df[df["category"] == chosen_cat]
+    view = df.copy()
+    if chosen_cat != "All":
+        view = view[view["category"] == chosen_cat]
+    if chosen_acct != "All":
+        view = view[view["account"] == chosen_acct]
 
     st.dataframe(
-        view[["date", "description", "amount", "category", "matched_pattern", "source_file"]],
+        view[["date", "description", "amount", "category", "account", "matched_pattern"]],
         hide_index=True,
         use_container_width=True,
         column_config={
@@ -347,14 +374,14 @@ if st.session_state.compiled is not None:
             "amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
             "description": "Description",
             "category": "Category",
+            "account": "Account",
             "matched_pattern": "Matched pattern",
-            "source_file": "Source file",
         },
     )
 
     # --- Unmapped section ---
     unmapped_df = df[df["category"] == UNCATEGORISED][
-        ["date", "description", "amount", "source_file"]
+        ["date", "description", "amount", "account"]
     ].reset_index(drop=True)
 
     with st.expander(f"Unmapped transactions ({len(unmapped_df)})", expanded=False):
@@ -372,12 +399,13 @@ if st.session_state.compiled is not None:
                 column_config={
                     "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
                     "amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
+                    "account": "Account",
                 },
             )
 
     # --- Excluded section ---
     excluded_df = df_full[df_full["category"].isin(excluded)][
-        ["date", "description", "amount", "category", "source_file"]
+        ["date", "description", "amount", "category", "account"]
     ].reset_index(drop=True)
 
     with st.expander(f"Excluded transactions ({len(excluded_df)})", expanded=False):
@@ -403,7 +431,7 @@ if st.session_state.compiled is not None:
                     "amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
                     "description": "Description",
                     "category": "Category",
-                    "source_file": "Source file",
+                    "account": "Account",
                 },
             )
 
@@ -414,15 +442,18 @@ if st.session_state.compiled is not None:
 
     # Downloads use df_full so excluded categories are still in the output —
     # excluded means "hidden from dashboard", not "deleted from data".
-    unmapped_full = df_full[df_full["category"] == UNCATEGORISED][
-        ["date", "description", "amount", "source_file"]
-    ].reset_index(drop=True)
+    # Account is the friendly label; source_file kept for traceability.
+    download_cols = ["date", "description", "amount", "category", "account",
+                     "matched_pattern", "source_file"]
+    unmapped_cols = ["date", "description", "amount", "account", "source_file"]
+
+    unmapped_full = df_full[df_full["category"] == UNCATEGORISED][unmapped_cols].reset_index(drop=True)
 
     d1, d2 = st.columns(2)
     with d1:
         st.download_button(
             "Download categorised (Excel)",
-            data=to_excel_bytes(df_full[["date", "description", "amount", "category", "matched_pattern", "source_file"]]),
+            data=to_excel_bytes(df_full[download_cols]),
             file_name=f"spending_categorised_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
