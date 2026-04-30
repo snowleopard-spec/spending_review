@@ -642,10 +642,10 @@ if st.session_state.compiled is not None:
                      "matched_pattern", "source_file"]
 
     unmapped_full = df_full[df_full["category"] == UNCATEGORISED][
-        ["date", "description", "amount"]
+        ["date", "description", "amount", "account"]
     ].reset_index(drop=True)
 
-    d1, d2 = st.columns(2)
+    d1, d2, d3 = st.columns(3)
     with d1:
         st.download_button(
             "Download categorised (Excel)",
@@ -655,6 +655,16 @@ if st.session_state.compiled is not None:
             type="primary",
         )
     with d2:
+        st.download_button(
+            "Download unmapped (Excel)",
+            data=to_excel_bytes(unmapped_full),
+            file_name=f"spending_unmapped_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="secondary",
+            disabled=unmapped_full.empty,
+            help="Standalone snapshot of unmapped rows — does not modify transaction_history.xlsx.",
+        )
+    with d3:
         if st.button(
             "Append unmapped to history",
             type="secondary",
