@@ -31,26 +31,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from categories import load_categories
+
 CONFIG_DIR = Path(__file__).parent / "config"
 MAPPING_XLSX = CONFIG_DIR / "mapping.xlsx"
-CATEGORIES_TXT = CONFIG_DIR / "categories.txt"
 MAPPING_JSON = CONFIG_DIR / "mapping.json"
 
 RESERVED_CATEGORIES = {"Uncategorised"}
 MIN_PARTIAL_STRING_LENGTH = 3
-
-
-def load_categories() -> set[str]:
-    """Read categories.txt; return as a set."""
-    if not CATEGORIES_TXT.exists():
-        raise FileNotFoundError(
-            f"Missing {CATEGORIES_TXT}. Create it with one category per line."
-        )
-    with CATEGORIES_TXT.open() as f:
-        cats = {line.strip() for line in f if line.strip()}
-    if not cats:
-        raise ValueError(f"{CATEGORIES_TXT} is empty.")
-    return cats
 
 
 def load_mapping_xlsx() -> pd.DataFrame:
@@ -70,7 +58,6 @@ def load_mapping_xlsx() -> pd.DataFrame:
             f"Found columns: {list(df.columns)}"
         )
 
-    # Keep only the two columns we care about, even if there are extras
     return df[["partial_string", "category"]]
 
 
@@ -84,14 +71,12 @@ def validate_and_build(df: pd.DataFrame, valid_categories: set[str]) -> tuple[di
     errors: list[str] = []
     warnings: list[str] = []
 
-    # Drop fully empty rows
     df = df.dropna(how="all").reset_index(drop=True)
 
-    # Check for blank cells in either column
     blank_partial = df[df["partial_string"].isna() | (df["partial_string"].astype(str).str.strip() == "")]
     blank_category = df[df["category"].isna() | (df["category"].astype(str).str.strip() == "")]
     if not blank_partial.empty:
-        rows = [str(i + 2) for i in blank_partial.index]  # +2 for Excel row (1-indexed + header)
+        rows = [str(i + 2) for i in blank_partial.index]
         errors.append(f"Blank partial_string in row(s): {', '.join(rows)}")
     if not blank_category.empty:
         rows = [str(i + 2) for i in blank_category.index]
@@ -101,43 +86,38 @@ def validate_and_build(df: pd.DataFrame, valid_categories: set[str]) -> tuple[di
         raise ValueError("Mapping table errors:\n  - " + "\n  - ".join(errors))
 
     mapping: dict[str, str] = {}
-    seen_originals: dict[str, str] = {}  # lowercased -> original-cased (for duplicate reporting)
+    seen_originals: dict[str, str] = {}
 
     for idx, row in df.iterrows():
-        excel_row = idx + 2  # +1 for 0-index, +1 for header
+        excel_row = idx + 2
 
         original = str(row["partial_string"])
         stripped = original.strip()
         partial = stripped.lower()
         category = str(row["category"]).strip()
 
-        # Whitespace warning
         if original != stripped:
             warnings.append(
                 f"Row {excel_row}: leading/trailing whitespace in partial_string '{original}' (stripped)"
             )
 
-        # Length warning
         if len(partial) < MIN_PARTIAL_STRING_LENGTH:
             warnings.append(
                 f"Row {excel_row}: partial_string '{stripped}' is very short ({len(partial)} chars) — high false-match risk"
             )
 
-        # Reserved category check
         if category in RESERVED_CATEGORIES:
             errors.append(
                 f"Row {excel_row}: '{category}' is reserved and cannot be used in the mapping table"
             )
             continue
 
-        # Category validity check
         if category not in valid_categories:
             errors.append(
                 f"Row {excel_row}: category '{category}' is not in categories.txt"
             )
             continue
 
-        # Duplicate check (case-insensitive)
         if partial in mapping:
             errors.append(
                 f"Row {excel_row}: duplicate partial_string '{stripped}' "
@@ -161,7 +141,7 @@ def report_substring_overlaps(mapping: dict) -> list[str]:
     worth surfacing so the user can confirm intent.
     """
     notes = []
-    keys = sorted(mapping.keys(), key=len)  # shortest first
+    keys = sorted(mapping.keys(), key=len)
     for i, short in enumerate(keys):
         for long in keys[i + 1:]:
             if short == long:
@@ -177,19 +157,17 @@ def report_substring_overlaps(mapping: dict) -> list[str]:
 def main() -> int:
     print(f"Reading {MAPPING_XLSX.name}...")
     try:
-        valid_categories = load_categories()
+        valid_categories, excluded_categories = load_categories()
         df = load_mapping_xlsx()
         mapping, warnings = validate_and_build(df, valid_categories)
     except (FileNotFoundError, ValueError) as e:
         print(f"\n❌ {e}", file=sys.stderr)
         return 1
 
-    # Write JSON
     CONFIG_DIR.mkdir(exist_ok=True)
     with MAPPING_JSON.open("w") as f:
         json.dump(mapping, f, indent=2, sort_keys=True, ensure_ascii=False)
 
-    # Summary
     print(f"\n✅ Wrote {MAPPING_JSON.name}: {len(mapping)} mappings")
 
     categories_used = sorted(set(mapping.values()))
@@ -198,6 +176,9 @@ def main() -> int:
     unused = sorted(valid_categories - set(mapping.values()) - RESERVED_CATEGORIES)
     if unused:
         print(f"   Categories with no mappings yet: {', '.join(unused)}")
+
+    if excluded_categories:
+        print(f"   Excluded from dashboard: {', '.join(sorted(excluded_categories))}")
 
     if warnings:
         print(f"\n⚠️  {len(warnings)} warning(s):")

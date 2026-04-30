@@ -28,24 +28,44 @@ import pandas as pd
 UNCATEGORISED = "Uncategorised"
 
 
-def categorise(description: str, mapping: dict[str, str]) -> tuple[str, str]:
+def categorise(
+    description: str,
+    mapping: dict[str, str],
+    history: dict[str, str] | None = None,
+) -> tuple[str, str]:
     """
     Return (category, matched_pattern) for a single transaction description.
 
-    If no pattern matches, returns ("Uncategorised", "").
+    Match precedence:
+        1. history (exact match, case-insensitive) — wins if present
+        2. mapping (substring match, longest wins, case-insensitive)
+        3. fallback to ("Uncategorised", "")
+
+    The exact-first precedence means that if you've labelled a transaction in
+    your transaction history file, that decision always overrides any general
+    substring rule.
 
     Args:
         description: The transaction description string.
         mapping: Dict of {lowercased_partial_string: category}.
+        history: Optional dict of {lowercased_full_description: category}
+            built from transaction_history.xlsx (rows with a filled-in
+            category only).
     """
-    if not description or not mapping:
+    if not description:
         return UNCATEGORISED, ""
 
     desc_lower = description.lower()
 
-    # Find every partial_string that is a substring of the description.
-    matches = [p for p in mapping if p in desc_lower]
+    # 1. Exact match against transaction history wins
+    if history and desc_lower in history:
+        return history[desc_lower], description.strip()
 
+    # 2. Substring match
+    if not mapping:
+        return UNCATEGORISED, ""
+
+    matches = [p for p in mapping if p in desc_lower]
     if not matches:
         return UNCATEGORISED, ""
 
@@ -54,19 +74,24 @@ def categorise(description: str, mapping: dict[str, str]) -> tuple[str, str]:
     return mapping[best], best
 
 
-def categorise_dataframe(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+def categorise_dataframe(
+    df: pd.DataFrame,
+    mapping: dict[str, str],
+    history: dict[str, str] | None = None,
+) -> pd.DataFrame:
     """
     Apply categorise() across a DataFrame's 'description' column.
 
     Returns a copy of df with two new columns appended:
         - category: str
-        - matched_pattern: str (empty if Uncategorised)
+        - matched_pattern: str (empty if Uncategorised; full description for
+          history exact matches; the matching substring for substring matches)
     """
     if "description" not in df.columns:
         raise ValueError("DataFrame must have a 'description' column.")
 
     out = df.copy()
-    results = out["description"].apply(lambda d: categorise(d, mapping))
+    results = out["description"].apply(lambda d: categorise(d, mapping, history))
     out["category"] = results.apply(lambda r: r[0])
     out["matched_pattern"] = results.apply(lambda r: r[1])
     return out

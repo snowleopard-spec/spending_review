@@ -15,6 +15,7 @@ import streamlit as st
 from categorise import categorise_dataframe, load_mapping, UNCATEGORISED
 from categories import load_categories
 from accounts import load_accounts
+from transaction_history import load_history_mapping, append_to_history, DEFAULT_PATH as HISTORY_PATH
 from parsers.format_a import parse as parse_format_a
 from parsers.format_b import parse as parse_format_b
 
@@ -174,14 +175,20 @@ def compile_statements(uploaded_files, file_accounts: dict) -> pd.DataFrame:
     df = df[df["amount"] > 0].reset_index(drop=True)
     st.session_state.dropped_negatives = before - len(df)
 
-    # Categorise
+    # Categorise. History layer (exact-match) checked before substring layer.
     try:
         mapping = load_mapping(MAPPING_PATH)
     except FileNotFoundError as e:
         st.error(str(e))
         return None
 
-    df = categorise_dataframe(df, mapping)
+    try:
+        history = load_history_mapping(HISTORY_PATH)
+    except ValueError as e:
+        st.error(f"Could not load transaction history: {e}")
+        return None
+
+    df = categorise_dataframe(df, mapping, history)
     return df
 
 
@@ -484,7 +491,7 @@ if st.session_state.compiled is not None:
                 },
             )
 
-    # --- Downloads ---
+    # --- Downloads & history ---
     st.header("Downloads")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
@@ -494,9 +501,10 @@ if st.session_state.compiled is not None:
     # Account is the friendly label; source_file kept for traceability.
     download_cols = ["date", "description", "amount", "category", "account",
                      "matched_pattern", "source_file"]
-    unmapped_cols = ["date", "description", "amount", "account", "source_file"]
 
-    unmapped_full = df_full[df_full["category"] == UNCATEGORISED][unmapped_cols].reset_index(drop=True)
+    unmapped_full = df_full[df_full["category"] == UNCATEGORISED][
+        ["date", "description", "amount"]
+    ].reset_index(drop=True)
 
     d1, d2 = st.columns(2)
     with d1:
@@ -508,14 +516,32 @@ if st.session_state.compiled is not None:
             type="primary",
         )
     with d2:
-        st.download_button(
-            "Download unmapped (Excel)",
-            data=to_excel_bytes(unmapped_full),
-            file_name=f"spending_unmapped_{timestamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        if st.button(
+            "Append unmapped to history",
             type="secondary",
             disabled=unmapped_full.empty,
-        )
+            help=(
+                "Appends new unmapped rows to config/transaction_history.xlsx "
+                "(deduped on description). Edit that file in Excel to fill in "
+                "categories — they'll be applied on the next Compile."
+            ),
+        ):
+            try:
+                n_added, n_skipped = append_to_history(unmapped_full, HISTORY_PATH)
+            except (ValueError, PermissionError) as e:
+                st.error(f"Could not append to history: {e}")
+            else:
+                if n_added == 0:
+                    st.info(
+                        f"Nothing new to add — all {n_skipped} unmapped row(s) "
+                        f"are already in `transaction_history.xlsx`."
+                    )
+                else:
+                    msg = f"Appended {n_added} new row(s) to `transaction_history.xlsx`."
+                    if n_skipped:
+                        msg += f" Skipped {n_skipped} duplicate(s)."
+                    msg += " Edit the file in Excel to fill in categories."
+                    st.success(msg)
 
 else:
     st.info("Upload one or more statement files and click **Compile** to begin.")
