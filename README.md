@@ -1,19 +1,37 @@
 # Spending Review
 
-A local Streamlit dashboard for categorising credit card and bank account transactions from uploaded statements. Privacy-first: runs entirely on your machine, no external data transmission, configs and data gitignored.
+A local Streamlit dashboard for categorising credit card and bank account transactions from uploaded statements. Privacy-first: runs entirely on your machine, no external data transmission, configs and personal data gitignored.
 
 ## Features
 
-- **Multiple statement formats** with a pluggable parser architecture — currently Format A (credit card style with signed amounts) and Format B (bank account style with separate Withdrawals/Deposits columns)
-- **Per-file account selection** when uploading — drop multiple files, pick the account for each from a friendly dropdown ("Amex Platinum", "DBS Joint", etc.)
-- **Categorisation engine** using a curated partial-string → category table with longest-match-wins, case-insensitive matching
-- **Robust header detection** — finds the relevant columns by name, not position, so small format drifts don't break the parser
-- **Date range filter** at the top of the dashboard, cascading to summary metrics, charts, table, and downloads
+- **Five statement formats** out of the box, with a pluggable architecture for adding more
+- **Per-file account selection** when uploading — drop multiple files, pick the friendly account name for each from a configured list
+- **Two-layer categorisation**:
+  - Substring mapping table (general rules, locked JSON output)
+  - Transaction history (exact-match exceptions for one-off transactions, manually curated)
+- **Auto-rebuild of `mapping.json`** on Compile when `mapping.xlsx` has been edited (mtime-based skip otherwise)
+- **Validation** for both mapping table and transaction history against an authoritative category list, with clear per-row error/warning messages
+- **Date range filter** at the top of the dashboard, cascading through summary, charts, table, expanders, and downloads
 - **Independent Account and Category filters** on the categorised table
-- **Per-category dashboard exclusions** via a flag in `categories.txt` — hide categories like Transfers or Fees from the dashboard view while keeping them in the downloads
-- **Multi-file upload with deduplication** on (date, amount, description)
+- **Per-category dashboard exclusions** via a `,exclude` flag in `categories.txt` — hide categories like Transfers or Fees from the dashboard view while keeping them in downloads
+- **Multi-file upload with deduplication** on (date, amount, description), with the duplicates surfaced in their own panel for review
 - **Refunds and credits dropped automatically** with the count surfaced for transparency
-- **Two Excel outputs**: full categorised view (used for record-keeping) and unmapped subset (used to grow the mapping table)
+- **Three Excel outputs** at the bottom of every Compile:
+  - Full categorised view (download)
+  - Unmapped subset (download — read-only snapshot)
+  - Append unmapped to transaction history (mutates the curated history file)
+
+## Statement formats supported
+
+| Format | Description | File type |
+|---|---|---|
+| Format A | Credit card export with signed amounts | `.xlsx` |
+| Format B | Bank account export with separate Withdrawals/Deposits columns | `.xlsx` |
+| Format C | Legacy bank statement (BIFF format, "DD Mon YYYY" dates) | `.xls` |
+| Format D | Headerless bank CSV with sign flip and comma-thousands amounts | `.csv` |
+| Format E | Bank CSV with buried header, S$ currency prefix, abbreviated dates | `.csv` |
+
+Each parser is a small, self-contained module under `parsers/`. Adding a new format means creating one new file and registering it in two places — see "Adding a new statement format" below.
 
 ## Setup
 
@@ -46,24 +64,29 @@ A browser tab will open at http://localhost:8501. Stop with `Ctrl+C`.
 
 ```
 spending-review/
-├── app.py                  # Streamlit dashboard
-├── categorise.py           # Core matching logic
-├── categories.py           # Loader for categories.txt
-├── accounts.py             # Loader for accounts.yaml
-├── build_mapping.py        # Excel mapping table → JSON config
+├── app.py                       # Streamlit dashboard
+├── categorise.py                # Two-layer matching logic
+├── categories.py                # Loader for categories.txt
+├── accounts.py                  # Loader for accounts.yaml
+├── transaction_history.py       # Reader/appender for transaction_history.xlsx
+├── build_mapping.py             # Excel mapping table → JSON config (CLI + library)
 ├── requirements.txt
 ├── parsers/
 │   ├── __init__.py
-│   ├── format_a.py         # Credit-card-style parser
-│   └── format_b.py         # Bank-account-style parser
+│   ├── format_a.py
+│   ├── format_b.py
+│   ├── format_c.py
+│   ├── format_d.py
+│   └── format_e.py
 ├── .streamlit/
-│   └── config.toml         # Theme (cream / olive / taupe)
-├── config/                 # Local only — gitignored
-│   ├── categories.txt      # Authoritative category list (with exclusion flags)
-│   ├── mapping.xlsx        # Edited by hand
-│   ├── mapping.json        # Generated by build_mapping.py
-│   └── accounts.yaml       # Account name → format mapping
-└── data/                   # Local only — gitignored (reserved for future use)
+│   └── config.toml              # Theme (cream / olive / taupe)
+├── config/                      # Local only — gitignored
+│   ├── categories.txt           # Authoritative category list (with exclusion flags)
+│   ├── accounts.yaml            # Account name → format mapping
+│   ├── mapping.xlsx             # Substring mapping, edited by hand
+│   ├── mapping.json             # Generated by build_mapping.py
+│   └── transaction_history.xlsx # Curated exact-match log (auto-created on first append)
+└── data/                        # Local only — gitignored (reserved for future use)
 ```
 
 ## Configuration
@@ -72,7 +95,7 @@ The `config/` folder is gitignored — a fresh clone will not run until you crea
 
 ### `config/categories.txt`
 
-The authoritative category list. Every category used in `mapping.xlsx` must appear here. The reserved name `Uncategorised` is auto-assigned to anything that doesn't match.
+The authoritative category list. Every category used in `mapping.xlsx` and `transaction_history.xlsx` must appear here. The reserved name `Uncategorised` is auto-assigned to anything that doesn't match.
 
 Append `,exclude` to flag categories that should be hidden from the dashboard view (still appear in downloads):
 
@@ -94,10 +117,10 @@ Maps friendly account names to parser format keys. Each entry creates an option 
 accounts:
   - name: "Amex Platinum"
     format: "Format A"
-  - name: "Amex Business"
-    format: "Format A"
   - name: "DBS Joint"
     format: "Format B"
+  - name: "Citi Plus"
+    format: "Format C"
 ```
 
 The `format` value must match a key in `app.py`'s `PARSERS` dict. The loader validates this at startup.
@@ -114,9 +137,15 @@ Two columns, edited by hand in Excel:
 
 When a transaction description contains any `partial_string` as a substring, it gets that category. Matching is case-insensitive; longest match wins on ties.
 
+### `config/transaction_history.xlsx`
+
+Auto-created on first "Append unmapped to history" click. Columns: `date`, `description`, `amount`, `category`. The append operation is idempotent (deduped on description, case-insensitive). Edit in Excel to fill in categories — rows with a filled-in category form an exact-match layer that runs *before* substring matching.
+
+Categories in this file are validated against `categories.txt` on every Compile. Invalid rows are surfaced as a warning expander but otherwise ignored (the transaction falls through to substring matching).
+
 ### `config/mapping.json`
 
-Generated by `build_mapping.py`. Don't edit by hand — your changes will be overwritten next time you build.
+Generated automatically from `mapping.xlsx`. Don't edit by hand — your changes will be overwritten next time you Compile (or run `build_mapping.py`).
 
 ## Workflow
 
@@ -125,43 +154,44 @@ Generated by `build_mapping.py`. Don't edit by hand — your changes will be ove
 1. Create `config/categories.txt` with your category list (mark exclusions if any)
 2. Create `config/accounts.yaml` with your accounts
 3. Create `config/mapping.xlsx` with initial partial-string → category rows
-4. Run `python build_mapping.py` to generate `mapping.json`
+4. (Optional) Run `python build_mapping.py` to generate `mapping.json` — the dashboard does this for you on Compile, but running it manually shows verbose output useful while curating
 
 **Monthly review:**
 
 1. `streamlit run app.py`
 2. Drop one or more statement files into the uploader
 3. For each file, pick the corresponding account from the dropdown next to it
-4. Click **Compile**
-5. Use the date range picker to narrow to the period you're reviewing
+4. Click **Compile** — the dashboard auto-rebuilds `mapping.json` if `mapping.xlsx` was edited
+5. Use the date range picker to narrow to the period under review
 6. Review the categorised view, category breakdown, and account mix
-7. Download the unmapped Excel
-8. Add new partial strings to `mapping.xlsx`, save
-9. Run `python build_mapping.py` to regenerate the config
-10. Click **Compile** again in the dashboard to see updated categorisation
+7. Click **Append unmapped to history** — appends new unmapped rows to `transaction_history.xlsx`
+8. Open `transaction_history.xlsx` in Excel, fill in categories for any rows you want categorised, save
+9. (Optionally) edit `mapping.xlsx` to add new substring rules for repeating merchants
+10. Click **Compile** again — both layers pick up your edits
 
 ## Adding a new statement format
 
 When a new bank or card uses a structurally different export:
 
-1. Create `parsers/format_c.py` exposing a `parse(file_bytes, filename) -> pd.DataFrame` function returning columns `date`, `description`, `amount`, `source_file`. Amounts must be signed (positive = spend, negative = refund/payment).
+1. Create `parsers/format_f.py` exposing a `parse(file_bytes, filename) -> pd.DataFrame` function returning columns `date`, `description`, `amount`, `source_file`. Amounts must be signed (positive = spend, negative = refund/credit) — adjust inside the parser if your bank uses a different convention.
+
 2. Register it in the `PARSERS` dict at the top of `app.py`:
 
    ```python
    PARSERS = {
        "Format A": parse_format_a,
-       "Format B": parse_format_b,
-       "Format C": parse_format_c,
+       # ...
+       "Format F": parse_format_f,
    }
    ```
 
 3. Add an entry to `accounts.yaml` referencing the new format key.
 
-The dashboard picks up the new option automatically.
+The dashboard picks up the new option automatically. See the existing parsers for patterns: header detection by name, format-specific date parsing, defensive type coercion that drops rows that fail to parse.
 
 ## Privacy
 
 - All processing happens locally — no external API calls in the core pipeline.
-- The entire `config/` directory is gitignored, so mapping tables, account names, and category lists never leave your machine.
-- Statement files exist only in browser memory while the app is running and on disk only if you explicitly download the output Excel files.
+- The entire `config/` directory is gitignored, so mapping tables, account names, transaction history, and category lists never leave your machine.
+- Statement files exist only in browser memory while the app is running, and on disk only if you explicitly download the output Excel files.
 - A fresh clone of this repository contains no transaction data, mapping data, or account names.
