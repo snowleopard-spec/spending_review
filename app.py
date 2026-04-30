@@ -16,6 +16,7 @@ from categorise import categorise_dataframe, load_mapping, UNCATEGORISED
 from categories import load_categories
 from accounts import load_accounts
 from transaction_history import load_history_mapping, append_to_history, DEFAULT_PATH as HISTORY_PATH
+from build_mapping import build_mapping_if_changed
 from parsers.format_a import parse as parse_format_a
 from parsers.format_b import parse as parse_format_b
 from parsers.format_c import parse as parse_format_c
@@ -141,6 +142,8 @@ for key, default in [
     ("file_accounts", {}),       # file_id → account name
     ("last_account", None),      # last account chosen, used as default for new files
     ("history_warnings", []),    # invalid-category warnings from transaction_history
+    ("mapping_status", None),    # (rebuilt: bool, n_rules: int) or None
+    ("mapping_warnings", []),    # warnings from auto-build (overlaps, short strings)
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -158,6 +161,17 @@ def compile_statements(uploaded_files, file_accounts: dict) -> pd.DataFrame:
 
     Adds an 'account' column derived from the user's per-file selection.
     """
+    # Rebuild mapping.json from mapping.xlsx if needed. This means the user
+    # doesn't have to remember to run build_mapping.py separately after
+    # editing the Excel — but they still can if they want to.
+    try:
+        rebuilt, n_rules, mapping_warnings = build_mapping_if_changed()
+        st.session_state.mapping_status = (rebuilt, n_rules)
+        st.session_state.mapping_warnings = mapping_warnings
+    except (FileNotFoundError, ValueError) as e:
+        st.error(f"**Mapping build failed:** {e}")
+        return None
+
     frames = []
     for uf in uploaded_files:
         account = file_accounts.get(uf.file_id)
@@ -289,6 +303,30 @@ if st.button("Compile", type="primary", disabled=not uploaded):
 # --- Results section ---
 if st.session_state.compiled is not None:
     df_compiled = st.session_state.compiled
+
+    # Surface mapping build status (was the JSON regenerated this Compile?)
+    status = st.session_state.mapping_status
+    if status is not None:
+        rebuilt, n_rules = status
+        if rebuilt:
+            st.caption(f"Rebuilt `mapping.json` ({n_rules} rules)")
+        else:
+            st.caption(f"`mapping.json` unchanged ({n_rules} rules)")
+
+    # Mapping-table warnings (short strings, substring overlaps).
+    # Same pattern as history warnings — expandable, count in the title.
+    if st.session_state.mapping_warnings:
+        n = len(st.session_state.mapping_warnings)
+        with st.expander(
+            f"ℹ️ {n} mapping-table note{'s' if n != 1 else ''}",
+            expanded=False,
+        ):
+            st.markdown(
+                "These are advisory only — the build succeeded. They're surfaced "
+                "in case anything was unintentional."
+            )
+            for w in st.session_state.mapping_warnings:
+                st.markdown(f"- {w}")
 
     # Surface invalid-category warnings from transaction_history.xlsx, if any.
     # These rows fall through to substring matching (or Uncategorised) — the

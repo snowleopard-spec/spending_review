@@ -148,10 +148,60 @@ def report_substring_overlaps(mapping: dict) -> list[str]:
                 continue
             if short in long and mapping[short] != mapping[long]:
                 notes.append(
-                    f"  '{short}' ({mapping[short]}) is contained in "
+                    f"'{short}' ({mapping[short]}) is contained in "
                     f"'{long}' ({mapping[long]}) — longest match wins, confirm this is intended"
                 )
     return notes
+
+
+def build_mapping_if_changed() -> tuple[bool, int, list[str]]:
+    """
+    Rebuild mapping.json from mapping.xlsx only if the source is newer than
+    the output (or the output doesn't exist). Used by the dashboard to skip
+    redundant work on Compile.
+
+    Returns:
+        (rebuilt, n_rules, warnings)
+        rebuilt: True if the JSON was regenerated this call.
+        n_rules: number of rules in the (current) mapping.json.
+        warnings: list of human-readable warning strings (overlaps + per-row
+                  warnings from the build). Empty if the build was skipped.
+
+    Raises:
+        FileNotFoundError if mapping.xlsx is missing.
+        ValueError on validation errors (with clear per-row detail).
+    """
+    if not MAPPING_XLSX.exists():
+        raise FileNotFoundError(
+            f"Missing {MAPPING_XLSX}. Create it with columns: partial_string, category."
+        )
+
+    needs_rebuild = (
+        not MAPPING_JSON.exists()
+        or MAPPING_XLSX.stat().st_mtime > MAPPING_JSON.stat().st_mtime
+    )
+
+    if not needs_rebuild:
+        # Just count rules in the existing JSON; no warnings.
+        with MAPPING_JSON.open() as f:
+            existing = json.load(f)
+        return False, len(existing), []
+
+    # Rebuild
+    valid_categories, _ = load_categories()
+    df = load_mapping_xlsx()
+    mapping, build_warnings = validate_and_build(df, valid_categories)
+
+    CONFIG_DIR.mkdir(exist_ok=True)
+    with MAPPING_JSON.open("w") as f:
+        json.dump(mapping, f, indent=2, sort_keys=True, ensure_ascii=False)
+
+    overlap_warnings = report_substring_overlaps(mapping)
+    all_warnings = build_warnings + [
+        f"Substring overlap: {note}" for note in overlap_warnings
+    ]
+
+    return True, len(mapping), all_warnings
 
 
 def main() -> int:
@@ -189,7 +239,7 @@ def main() -> int:
     if overlaps:
         print(f"\nℹ️  Substring overlaps (longest match wins, confirm intent):")
         for note in overlaps:
-            print(note)
+            print(f"  {note}")
 
     return 0
 
