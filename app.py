@@ -20,6 +20,7 @@ from build_mapping import build_mapping_if_changed
 from parsers.format_a import parse as parse_format_a
 from parsers.format_b import parse as parse_format_b
 from parsers.format_c import parse as parse_format_c
+from parsers.format_d import parse as parse_format_d
 
 # --- Page config ---
 st.set_page_config(page_title="Spending Review", layout="wide")
@@ -124,6 +125,7 @@ PARSERS = {
     "Format A": parse_format_a,
     "Format B": parse_format_b,
     "Format C": parse_format_c,
+    "Format D": parse_format_d,
 }
 
 # Load account → format mapping. Fail loud at startup so misconfiguration
@@ -303,6 +305,18 @@ if st.button("Compile", type="primary", disabled=not uploaded):
 # --- Results section ---
 if st.session_state.compiled is not None:
     df_compiled = st.session_state.compiled
+
+    # Guard: an empty post-compile DataFrame would crash the date picker
+    # (since min/max return NaT on empty Series). Can happen legitimately —
+    # e.g., uploaded statement contains only refunds, all of which get dropped.
+    if df_compiled.empty:
+        st.info(
+            "No spending transactions found in the uploaded files after "
+            "deduplication and dropping refunds/credits. "
+            "If you expected results, check that the right account format "
+            "was selected for each file."
+        )
+        st.stop()
 
     # Surface mapping build status (was the JSON regenerated this Compile?)
     status = st.session_state.mapping_status
