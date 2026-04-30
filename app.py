@@ -111,20 +111,34 @@ for key, default in [
     ("compiled", None),
     ("dropped_negatives", 0),
     ("duplicates_removed", 0),
+    ("file_formats", {}),       # file_id → format name
+    ("last_format", None),      # last format chosen, used as default for new files
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 
 # --- Helpers ---
-def compile_statements(uploaded_files, parser_func) -> pd.DataFrame:
-    """Parse all uploaded files, concatenate, dedupe, drop negatives, categorise."""
+def compile_statements(uploaded_files, file_formats: dict) -> pd.DataFrame:
+    """
+    Parse all uploaded files using their selected formats, concatenate,
+    dedupe, drop negatives, categorise.
+
+    Args:
+        uploaded_files: list of Streamlit UploadedFile objects.
+        file_formats: dict mapping uploader file_id → format name.
+    """
     frames = []
     for uf in uploaded_files:
+        format_name = file_formats.get(uf.file_id)
+        if format_name is None or format_name not in PARSERS:
+            st.error(f"No format selected for '{uf.name}'.")
+            return None
+        parser_func = PARSERS[format_name]
         try:
             frames.append(parser_func(uf.getvalue(), uf.name))
         except ValueError as e:
-            st.error(f"Failed to parse '{uf.name}': {e}")
+            st.error(f"Failed to parse '{uf.name}' as {format_name}: {e}")
             return None
 
     if not frames:
@@ -167,19 +181,49 @@ def format_sgd(x: float) -> str:
 # --- Upload section ---
 st.header("Upload Statements")
 
-col_format, col_files = st.columns([1, 3])
-with col_format:
-    chosen_format = st.selectbox("Statement format", list(PARSERS.keys()))
-with col_files:
-    uploaded = st.file_uploader(
-        "Drop one or more statement files",
-        type=["xlsx", "csv"],
-        accept_multiple_files=True,
-    )
+uploaded = st.file_uploader(
+    "Drop one or more statement files",
+    type=["xlsx", "csv"],
+    accept_multiple_files=True,
+)
+
+# Garbage-collect format memory for files no longer in the uploader
+if uploaded is not None:
+    current_ids = {uf.file_id for uf in uploaded}
+    st.session_state.file_formats = {
+        fid: fmt for fid, fmt in st.session_state.file_formats.items()
+        if fid in current_ids
+    }
+
+# Render per-file format selectors
+if uploaded:
+    st.markdown("**Select format per file**")
+    format_options = list(PARSERS.keys())
+
+    for uf in uploaded:
+        # Default each file's format to: previously chosen for this file > last
+        # format the user picked > first format in the list.
+        existing = st.session_state.file_formats.get(uf.file_id)
+        default = existing or st.session_state.last_format or format_options[0]
+        default_idx = format_options.index(default) if default in format_options else 0
+
+        col_name, col_format = st.columns([3, 1])
+        with col_name:
+            st.markdown(f"📄 `{uf.name}`")
+        with col_format:
+            chosen = st.selectbox(
+                "Format",
+                format_options,
+                index=default_idx,
+                key=f"format_{uf.file_id}",
+                label_visibility="collapsed",
+            )
+            st.session_state.file_formats[uf.file_id] = chosen
+            st.session_state.last_format = chosen
 
 if st.button("Compile", type="primary", disabled=not uploaded):
     with st.spinner("Parsing and categorising..."):
-        result = compile_statements(uploaded, PARSERS[chosen_format])
+        result = compile_statements(uploaded, st.session_state.file_formats)
         if result is not None:
             st.session_state.compiled = result
 
