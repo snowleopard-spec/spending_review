@@ -247,7 +247,41 @@ if st.button("Compile", type="primary", disabled=not uploaded):
 
 # --- Results section ---
 if st.session_state.compiled is not None:
-    df_full = st.session_state.compiled
+    df_compiled = st.session_state.compiled
+
+    # --- Date range filter (top-level, applies to everything below) ---
+    min_date = df_compiled["date"].min()
+    max_date = df_compiled["date"].max()
+
+    st.header("Date Range")
+    date_range = st.date_input(
+        "Filter by date",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        format="YYYY-MM-DD",
+        label_visibility="collapsed",
+    )
+
+    # st.date_input returns a tuple of (start, end) when value is a 2-tuple,
+    # but during partial selection it returns a 1-tuple. Handle both cases.
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_date, end_date = date_range
+    else:
+        # User is mid-selection (only picked start, not end) — show full range
+        start_date, end_date = min_date, max_date
+
+    # Apply date filter to the full DataFrame. Everything downstream
+    # (excluded filter, dashboard view, downloads) works off this.
+    date_mask = (df_compiled["date"] >= start_date) & (df_compiled["date"] <= end_date)
+    df_full = df_compiled[date_mask].reset_index(drop=True)
+
+    if df_full.empty:
+        st.info(
+            f"No transactions in selected range "
+            f"({start_date.isoformat()} to {end_date.isoformat()})."
+        )
+        st.stop()
 
     # Load excluded categories. If categories.txt is missing or invalid,
     # surface the error but don't crash — fall back to no exclusions.
@@ -258,7 +292,7 @@ if st.session_state.compiled is not None:
         excluded = set()
 
     # df is the dashboard view (excluded categories hidden);
-    # df_full is what downloads use (everything).
+    # df_full is what downloads use (everything within the date range).
     if excluded:
         df = df_full[~df_full["category"].isin(excluded)].reset_index(drop=True)
     else:
@@ -275,10 +309,25 @@ if st.session_state.compiled is not None:
     m1.metric("Total spend", format_sgd(total_spend))
     m2.metric("Transactions", f"{n_tx:,}")
     m3.metric("Unmapped", f"{n_unmapped} ({pct_unmapped:.0f}%)")
-    m4.metric("Refunds dropped", st.session_state.dropped_negatives)
+    m4.metric(
+        "Refunds dropped",
+        st.session_state.dropped_negatives,
+        help="Counted across the entire upload, not just the selected date range.",
+    )
+
+    # Show the active date range so it's always clear what's being summarised.
+    is_full_range = (start_date == min_date) and (end_date == max_date)
+    if not is_full_range:
+        st.caption(
+            f"Showing {start_date.isoformat()} to {end_date.isoformat()}. "
+            f"Upload covers {min_date.isoformat()} to {max_date.isoformat()}."
+        )
 
     if st.session_state.duplicates_removed > 0:
-        st.caption(f"Removed {st.session_state.duplicates_removed} duplicate row(s) across uploaded files.")
+        st.caption(
+            f"Removed {st.session_state.duplicates_removed} duplicate row(s) "
+            f"across uploaded files (across all uploaded data)."
+        )
 
     if excluded:
         excluded_in_data = sorted(excluded & set(df_full["category"].unique()))
