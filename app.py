@@ -123,6 +123,7 @@ for key, default in [
     ("duplicates_removed", 0),
     ("file_accounts", {}),       # file_id → account name
     ("last_account", None),      # last account chosen, used as default for new files
+    ("history_warnings", []),    # invalid-category warnings from transaction_history
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -182,11 +183,25 @@ def compile_statements(uploaded_files, file_accounts: dict) -> pd.DataFrame:
         st.error(str(e))
         return None
 
+    # Load valid categories so we can validate the history file's contents.
+    # If categories.txt is broken, surface the error and skip history validation
+    # rather than blocking the whole compile.
     try:
-        history = load_history_mapping(HISTORY_PATH)
+        valid_cats, _ = load_categories()
+    except (FileNotFoundError, ValueError):
+        valid_cats = None  # validation disabled if categories.txt missing
+
+    try:
+        history, history_warnings = load_history_mapping(
+            HISTORY_PATH, valid_categories=valid_cats
+        )
     except ValueError as e:
         st.error(f"Could not load transaction history: {e}")
         return None
+
+    # Stash warnings in session state so they show every rerun, not just
+    # the rerun that triggered Compile.
+    st.session_state.history_warnings = history_warnings
 
     df = categorise_dataframe(df, mapping, history)
     return df
@@ -255,6 +270,23 @@ if st.button("Compile", type="primary", disabled=not uploaded):
 # --- Results section ---
 if st.session_state.compiled is not None:
     df_compiled = st.session_state.compiled
+
+    # Surface invalid-category warnings from transaction_history.xlsx, if any.
+    # These rows fall through to substring matching (or Uncategorised) — the
+    # dashboard still renders, but the user is told what to fix.
+    if st.session_state.history_warnings:
+        n = len(st.session_state.history_warnings)
+        with st.expander(
+            f"⚠️ {n} invalid categor{'y' if n == 1 else 'ies'} in `transaction_history.xlsx`",
+            expanded=False,
+        ):
+            st.markdown(
+                "These rows have a category that isn't in `categories.txt`. "
+                "They've been ignored — the affected transactions fall through to "
+                "substring matching. Fix the typos and re-Compile to apply."
+            )
+            for w in st.session_state.history_warnings:
+                st.markdown(f"- {w}")
 
     # --- Date range filter (top-level, applies to everything below) ---
     min_date = df_compiled["date"].min()

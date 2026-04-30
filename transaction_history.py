@@ -45,33 +45,74 @@ def load_history_dataframe(path: Path = DEFAULT_PATH) -> pd.DataFrame:
     return df[REQUIRED_COLUMNS]
 
 
-def load_history_mapping(path: Path = DEFAULT_PATH) -> dict[str, str]:
+def load_history_mapping(
+    path: Path = DEFAULT_PATH,
+    valid_categories: set[str] | None = None,
+) -> tuple[dict[str, str], list[str]]:
     """
     Build the {description_lowercased: category} dict for runtime lookup.
 
-    Only includes rows where category is filled in. Rows with a blank
-    category are pending review and ignored.
+    Only includes rows where category is filled in AND (if valid_categories
+    is provided) the category is in the allowed set.
 
-    On case-insensitive duplicate descriptions, the first filled-in category
-    wins (deterministic, but in practice duplicates shouldn't exist because
-    append is deduped on description).
+    Args:
+        path: History file path.
+        valid_categories: Optional allowed category set. Rows with categories
+            not in this set are excluded from the mapping and reported as
+            warnings. The reserved "Uncategorised" is always invalid here
+            because it's a no-op assignment that should fall through to
+            substring matching anyway.
+
+    Returns:
+        (mapping, warnings)
+        mapping: {lowercased_description: category}
+        warnings: list of human-readable warning strings for invalid rows.
+
+    On case-insensitive duplicate descriptions, the first valid filled-in
+    category wins (deterministic; in practice duplicates shouldn't exist
+    because append is deduped on description).
     """
     df = load_history_dataframe(path)
     if df.empty:
-        return {}
+        return {}, []
 
     out: dict[str, str] = {}
-    for _, row in df.iterrows():
+    warnings: list[str] = []
+    reserved = {"Uncategorised"}
+
+    for idx, row in df.iterrows():
+        excel_row = idx + 2  # +1 for 0-index, +1 for header
         desc = row["description"]
         cat = row["category"]
+
         if pd.isna(desc) or not str(desc).strip():
             continue
         if pd.isna(cat) or not str(cat).strip():
             continue
-        key = str(desc).strip().lower()
+
+        cat_clean = str(cat).strip()
+        desc_clean = str(desc).strip()
+
+        # Validate against allowed categories if provided
+        if valid_categories is not None:
+            if cat_clean in reserved:
+                warnings.append(
+                    f"Row {excel_row} ('{desc_clean}'): "
+                    f"category '{cat_clean}' is reserved and cannot be used."
+                )
+                continue
+            if cat_clean not in valid_categories:
+                warnings.append(
+                    f"Row {excel_row} ('{desc_clean}'): "
+                    f"category '{cat_clean}' is not in categories.txt."
+                )
+                continue
+
+        key = desc_clean.lower()
         if key not in out:
-            out[key] = str(cat).strip()
-    return out
+            out[key] = cat_clean
+
+    return out, warnings
 
 
 def append_to_history(
