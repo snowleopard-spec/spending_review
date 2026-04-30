@@ -13,7 +13,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from categorise import categorise_dataframe, load_mapping, UNCATEGORISED
+from categories import load_categories
 from parsers.format_a import parse as parse_format_a
+from parsers.format_b import parse as parse_format_b
 
 # --- Page config ---
 st.set_page_config(page_title="Spending Review", layout="wide")
@@ -101,6 +103,7 @@ MAPPING_PATH = "config/mapping.json"
 # Parser registry — add new formats here
 PARSERS = {
     "Format A": parse_format_a,
+    "Format B": parse_format_b,
 }
 
 # --- Session state ---
@@ -182,7 +185,22 @@ if st.button("Compile", type="primary", disabled=not uploaded):
 
 # --- Results section ---
 if st.session_state.compiled is not None:
-    df = st.session_state.compiled
+    df_full = st.session_state.compiled
+
+    # Load excluded categories. If categories.txt is missing or invalid,
+    # surface the error but don't crash — fall back to no exclusions.
+    try:
+        _, excluded = load_categories()
+    except (FileNotFoundError, ValueError) as e:
+        st.warning(f"Could not load category exclusions: {e}")
+        excluded = set()
+
+    # df is the dashboard view (excluded categories hidden);
+    # df_full is what downloads use (everything).
+    if excluded:
+        df = df_full[~df_full["category"].isin(excluded)].reset_index(drop=True)
+    else:
+        df = df_full
 
     st.header("Summary")
 
@@ -199,6 +217,16 @@ if st.session_state.compiled is not None:
 
     if st.session_state.duplicates_removed > 0:
         st.caption(f"Removed {st.session_state.duplicates_removed} duplicate row(s) across uploaded files.")
+
+    if excluded:
+        excluded_in_data = sorted(excluded & set(df_full["category"].unique()))
+        if excluded_in_data:
+            n_hidden = (df_full["category"].isin(excluded)).sum()
+            st.caption(
+                f"Hidden from dashboard: {', '.join(excluded_in_data)} "
+                f"({n_hidden} transaction{'s' if n_hidden != 1 else ''}). "
+                f"Downloads include all categories."
+            )
 
     # --- Spending by category ---
     st.header("Spending by Category")
@@ -303,16 +331,54 @@ if st.session_state.compiled is not None:
                 },
             )
 
+    # --- Excluded section ---
+    excluded_df = df_full[df_full["category"].isin(excluded)][
+        ["date", "description", "amount", "category", "source_file"]
+    ].reset_index(drop=True)
+
+    with st.expander(f"Excluded transactions ({len(excluded_df)})", expanded=False):
+        if not excluded:
+            st.info("No categories are flagged as excluded in `categories.txt`.")
+        elif excluded_df.empty:
+            st.info(
+                "No transactions matched any excluded categories "
+                f"({', '.join(sorted(excluded))})."
+            )
+        else:
+            st.markdown(
+                "These transactions are hidden from the dashboard view because their "
+                "category is flagged with `,exclude` in `categories.txt`. "
+                "They are still included in the downloads."
+            )
+            st.dataframe(
+                excluded_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                    "amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
+                    "description": "Description",
+                    "category": "Category",
+                    "source_file": "Source file",
+                },
+            )
+
     # --- Downloads ---
     st.header("Downloads")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
+    # Downloads use df_full so excluded categories are still in the output —
+    # excluded means "hidden from dashboard", not "deleted from data".
+    unmapped_full = df_full[df_full["category"] == UNCATEGORISED][
+        ["date", "description", "amount", "source_file"]
+    ].reset_index(drop=True)
+
     d1, d2 = st.columns(2)
     with d1:
         st.download_button(
             "Download categorised (Excel)",
-            data=to_excel_bytes(df[["date", "description", "amount", "category", "matched_pattern", "source_file"]]),
+            data=to_excel_bytes(df_full[["date", "description", "amount", "category", "matched_pattern", "source_file"]]),
             file_name=f"spending_categorised_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
@@ -320,11 +386,11 @@ if st.session_state.compiled is not None:
     with d2:
         st.download_button(
             "Download unmapped (Excel)",
-            data=to_excel_bytes(unmapped_df),
+            data=to_excel_bytes(unmapped_full),
             file_name=f"spending_unmapped_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="secondary",
-            disabled=unmapped_df.empty,
+            disabled=unmapped_full.empty,
         )
 
 else:
