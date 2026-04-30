@@ -30,7 +30,7 @@ st.markdown("""
     }
     h1 { letter-spacing: -0.5px; }
 
-    .stMarkdown, .stText, p, span, label {
+    .stMarkdown, .stText, p, label {
         font-family: 'Source Sans Pro', sans-serif !important;
     }
 
@@ -54,8 +54,42 @@ st.markdown("""
 
     .stDataFrame { border-radius: 4px; }
     .block-container { padding-top: 2rem !important; }
-    [data-testid="stFileUploader"] { border-color: #C4B8A8 !important; }
+
+    /* File uploader — fix overlapping text and match theme */
+    [data-testid="stFileUploader"] section {
+        background-color: #EDE7DF !important;
+        border: 1px dashed #C4B8A8 !important;
+        border-radius: 4px !important;
+    }
+    [data-testid="stFileUploader"] section > button {
+        background-color: white !important;
+        color: #3D3229 !important;
+        border: 1px solid #C4B8A8 !important;
+    }
+    [data-testid="stFileUploaderDropzoneInstructions"] {
+        color: #3D3229 !important;
+    }
+
     .stAlert { border-radius: 4px !important; }
+
+    /* Preserve material icon rendering — icons must use their own font, not Source Sans Pro */
+    [data-testid="stIcon"],
+    .material-icons,
+    .material-symbols-outlined,
+    span.material-icons,
+    span.material-symbols-outlined {
+        font-family: 'Material Symbols Outlined', 'Material Icons' !important;
+    }
+
+    /* Dataframe — solid backgrounds for menus and headers
+       (prevents text-on-text overlap when column menu opens) */
+    .stDataFrame [role="columnheader"] {
+        background-color: #EDE7DF !important;
+        color: #3D3229 !important;
+    }
+    [data-testid="stDataFrameResizable"] {
+        background-color: white !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -176,15 +210,36 @@ if st.session_state.compiled is not None:
         .reset_index(drop=True)
     )
 
+    # Earthy palette — same family as Portfolio Allocation Tool.
+    # Rust orange reserved for Uncategorised so it visually stands out.
+    PALETTE = [
+        "#8B7355",  # taupe
+        "#6B8E23",  # olive
+        "#8B6F47",  # warm brown
+        "#5C7A5C",  # sage
+        "#A0826D",  # mocha
+        "#7B6F5C",  # stone
+        "#9B7E5A",  # camel
+        "#6B5D4F",  # bark
+        "#A89070",  # sand
+        "#5D6B4E",  # forest
+    ]
+
+    bar_colors = []
+    palette_idx = 0
+    for cat in cat_summary["category"]:
+        if cat == UNCATEGORISED:
+            bar_colors.append("#C77B4F")  # rust — calls attention
+        else:
+            bar_colors.append(PALETTE[palette_idx % len(PALETTE)])
+            palette_idx += 1
+
     fig = go.Figure(
         go.Bar(
             x=cat_summary["total"],
             y=cat_summary["category"],
             orientation="h",
-            marker_color=[
-                "#A0522D" if c == UNCATEGORISED else "#8B7355"
-                for c in cat_summary["category"]
-            ],
+            marker_color=bar_colors,
             text=[format_sgd(v) for v in cat_summary["total"]],
             textposition="outside",
             hovertemplate="<b>%{y}</b><br>%{text}<br>%{customdata} transactions<extra></extra>",
