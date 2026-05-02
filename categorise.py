@@ -17,6 +17,9 @@ Design notes:
       against hundreds of mappings. If profiling ever shows this as a bottleneck,
       replace the body of `categorise` with an Aho-Corasick implementation —
       no other code in the project needs to change.
+    - Rows arriving with `pre_categorised=True` (Format F) bypass matching
+      entirely: their existing category is preserved and matched_pattern is
+      set to "manual" to indicate user-provided categorisation.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from pathlib import Path
 import pandas as pd
 
 UNCATEGORISED = "Uncategorised"
+MANUAL_PATTERN = "manual"
 
 
 def categorise(
@@ -82,18 +86,51 @@ def categorise_dataframe(
     """
     Apply categorise() across a DataFrame's 'description' column.
 
-    Returns a copy of df with two new columns appended:
+    Returns a copy of df with two new columns appended (or preserved):
         - category: str
         - matched_pattern: str (empty if Uncategorised; full description for
-          history exact matches; the matching substring for substring matches)
+          history exact matches; the matching substring for substring matches;
+          "manual" for pre-categorised rows from Format F)
+
+    If df has a `pre_categorised` boolean column, rows where that is True
+    keep their existing `category` value and get matched_pattern="manual".
+    Rows where it is False (or where the column is absent) go through normal
+    matching.
     """
     if "description" not in df.columns:
         raise ValueError("DataFrame must have a 'description' column.")
 
     out = df.copy()
-    results = out["description"].apply(lambda d: categorise(d, mapping, history))
-    out["category"] = results.apply(lambda r: r[0])
-    out["matched_pattern"] = results.apply(lambda r: r[1])
+
+    # Default mask: nothing is pre-categorised unless the column says so.
+    if "pre_categorised" in out.columns:
+        pre_mask = out["pre_categorised"].fillna(False).astype(bool)
+    else:
+        pre_mask = pd.Series(False, index=out.index)
+
+    # Run categorisation on the rows that need it.
+    if pre_mask.any():
+        # Pre-categorised rows: keep existing category, set pattern to "manual".
+        # Rows that need categorisation: run categorise() as usual.
+        out["matched_pattern"] = ""
+        out.loc[pre_mask, "matched_pattern"] = MANUAL_PATTERN
+        # category should already be set on pre_mask rows; ensure column exists
+        if "category" not in out.columns:
+            out["category"] = UNCATEGORISED
+
+        non_pre = ~pre_mask
+        if non_pre.any():
+            results = out.loc[non_pre, "description"].apply(
+                lambda d: categorise(d, mapping, history)
+            )
+            out.loc[non_pre, "category"] = results.apply(lambda r: r[0])
+            out.loc[non_pre, "matched_pattern"] = results.apply(lambda r: r[1])
+    else:
+        # No pre-categorised rows — original simple path.
+        results = out["description"].apply(lambda d: categorise(d, mapping, history))
+        out["category"] = results.apply(lambda r: r[0])
+        out["matched_pattern"] = results.apply(lambda r: r[1])
+
     return out
 
 

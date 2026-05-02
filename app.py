@@ -22,6 +22,7 @@ from parsers.format_b import parse as parse_format_b
 from parsers.format_c import parse as parse_format_c
 from parsers.format_d import parse as parse_format_d
 from parsers.format_e import parse as parse_format_e
+from parsers.format_f import parse as parse_format_f
 
 # --- Page config ---
 st.set_page_config(page_title="Spending Review", layout="wide")
@@ -128,6 +129,7 @@ PARSERS = {
     "Format C": parse_format_c,
     "Format D": parse_format_d,
     "Format E": parse_format_e,
+    "Format F": parse_format_f,
 }
 
 # Load account → format mapping. Fail loud at startup so misconfiguration
@@ -177,6 +179,7 @@ def compile_statements(uploaded_files, file_accounts: dict) -> pd.DataFrame:
         return None
 
     frames = []
+    unfamiliar_accounts: set[str] = set()
     for uf in uploaded_files:
         account = file_accounts.get(uf.file_id)
         if account is None or account not in ACCOUNTS:
@@ -189,13 +192,38 @@ def compile_statements(uploaded_files, file_accounts: dict) -> pd.DataFrame:
         except ValueError as e:
             st.error(f"Failed to parse '{uf.name}' as {account} ({format_name}): {e}")
             return None
-        parsed["account"] = account
+
+        # If the parser supplied an `account` column (Format F), use those
+        # values where present and fall back to the dropdown selection where
+        # missing. Otherwise stamp every row with the dropdown selection.
+        if "account" in parsed.columns:
+            parsed["account"] = parsed["account"].fillna(account)
+            # Surface accounts that aren't in accounts.yaml (warning, not error)
+            file_unfamiliar = set(parsed["account"].unique()) - set(ACCOUNTS.keys())
+            unfamiliar_accounts |= file_unfamiliar
+        else:
+            parsed["account"] = account
         frames.append(parsed)
+
+    if unfamiliar_accounts:
+        st.warning(
+            "Accounts in uploaded file(s) that aren't in `accounts.yaml`: "
+            f"{', '.join(sorted(unfamiliar_accounts))}. Transactions kept; "
+            "these will appear in the Account filter as new options."
+        )
 
     if not frames:
         return None
 
     df = pd.concat(frames, ignore_index=True)
+
+    # Ensure pre_categorised column exists across the concatenated frame.
+    # Parsers A–E don't set it; Format F does. Fill missing values to False
+    # so the categoriser treats those rows normally.
+    if "pre_categorised" not in df.columns:
+        df["pre_categorised"] = False
+    else:
+        df["pre_categorised"] = df["pre_categorised"].fillna(False).astype(bool)
 
     # Mark duplicates on (date, amount, description) instead of dropping them.
     # First occurrence keeps duplicate=False; subsequent ones get True. This
