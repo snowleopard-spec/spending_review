@@ -685,6 +685,7 @@ if st.session_state.compiled is not None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
+        st.caption("Dashboard view as Excel — transaction exclusions applied.")
     with d2:
         st.download_button(
             "Download unmapped (Excel)",
@@ -695,6 +696,7 @@ if st.session_state.compiled is not None:
             disabled=unmapped_full.empty,
             help="Standalone snapshot of unmapped rows — does not modify transaction_history.xlsx.",
         )
+        st.caption("Unmapped transactions only.")
     with d3:
         # HTML snapshot mirrors the dashboard view (df, not df_full).
         # Filename uses the date range so recipients know the period at a glance.
@@ -712,6 +714,7 @@ if st.session_state.compiled is not None:
                 "Contains real transaction data — review before sharing."
             ),
         )
+        st.caption("Self-contained file with filter functionality for sharing.")
     with d4:
         if st.button(
             "Append unmapped to history",
@@ -739,6 +742,7 @@ if st.session_state.compiled is not None:
                         msg += f" Skipped {n_skipped} duplicate(s)."
                     msg += " Edit the file in Excel to fill in categories."
                     st.success(msg)
+        st.caption("Appends unmapped transactions to the archive file.")
 
 else:
     st.info("Upload one or more statement files and click **Compile** to begin.")

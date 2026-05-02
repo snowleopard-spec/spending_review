@@ -4,11 +4,12 @@ A local Streamlit dashboard for categorising credit card and bank account transa
 
 ## Features
 
-- **Five statement formats** out of the box, with a pluggable architecture for adding more
+- **Six statement formats** out of the box, with a pluggable architecture for adding more
 - **Per-file account selection** when uploading — drop multiple files, pick the friendly account name for each from a configured list
 - **Two-layer categorisation**:
   - Substring mapping table (general rules, locked JSON output)
   - Transaction history (exact-match exceptions for one-off transactions, manually curated)
+- **Pre-categorised rows respected** — Format F files can carry their own categories, which bypass matching
 - **Auto-rebuild of `mapping.json`** on Compile when `mapping.xlsx` has been edited (mtime-based skip otherwise)
 - **Validation** for both mapping table and transaction history against an authoritative category list, with clear per-row error/warning messages
 - **Date range filter** at the top of the dashboard, cascading through summary, charts, table, expanders, and downloads
@@ -16,9 +17,10 @@ A local Streamlit dashboard for categorising credit card and bank account transa
 - **Per-category dashboard exclusions** via a `,exclude` flag in `categories.txt` — hide categories like Transfers or Fees from the dashboard view while keeping them in downloads
 - **Multi-file upload with deduplication** on (date, amount, description), with the duplicates surfaced in their own panel for review
 - **Refunds and credits dropped automatically** with the count surfaced for transparency
-- **Three Excel outputs** at the bottom of every Compile:
-  - Full categorised view (download)
-  - Unmapped subset (download — read-only snapshot)
+- **Four outputs** at the bottom of every Compile:
+  - Categorised Excel (matches dashboard view; exclusions applied)
+  - Unmapped Excel (read-only snapshot)
+  - HTML snapshot (self-contained, filterable, shareable)
   - Append unmapped to transaction history (mutates the curated history file)
 
 ## Statement formats supported
@@ -30,6 +32,7 @@ A local Streamlit dashboard for categorising credit card and bank account transa
 | Format C | Legacy bank statement (BIFF format, "DD Mon YYYY" dates) | `.xls` |
 | Format D | Headerless bank CSV with sign flip and comma-thousands amounts | `.csv` |
 | Format E | Bank CSV with buried header, S$ currency prefix, abbreviated dates | `.csv` |
+| Format F | Manual entries / round-trip of the categorised export | `.xlsx` |
 
 Each parser is a small, self-contained module under `parsers/`. Adding a new format means creating one new file and registering it in two places — see "Adding a new statement format" below.
 
@@ -65,11 +68,12 @@ A browser tab will open at http://localhost:8501. Stop with `Ctrl+C`.
 ```
 spending-review/
 ├── app.py                       # Streamlit dashboard
-├── categorise.py                # Two-layer matching logic
+├── categorise.py                # Two-layer matching logic (with pre-categorised support)
 ├── categories.py                # Loader for categories.txt
 ├── accounts.py                  # Loader for accounts.yaml
 ├── transaction_history.py       # Reader/appender for transaction_history.xlsx
 ├── build_mapping.py             # Excel mapping table → JSON config (CLI + library)
+├── html_export.py               # Self-contained HTML snapshot builder
 ├── requirements.txt
 ├── parsers/
 │   ├── __init__.py
@@ -77,7 +81,8 @@ spending-review/
 │   ├── format_b.py
 │   ├── format_c.py
 │   ├── format_d.py
-│   └── format_e.py
+│   ├── format_e.py
+│   └── format_f.py
 ├── .streamlit/
 │   └── config.toml              # Theme (cream / olive / taupe)
 ├── config/                      # Local only — gitignored
@@ -97,7 +102,7 @@ The `config/` folder is gitignored — a fresh clone will not run until you crea
 
 The authoritative category list. Every category used in `mapping.xlsx` and `transaction_history.xlsx` must appear here. The reserved name `Uncategorised` is auto-assigned to anything that doesn't match.
 
-Append `,exclude` to flag categories that should be hidden from the dashboard view (still appear in downloads):
+Append `,exclude` to flag categories that should be hidden from the dashboard view (still appear in non-categorised downloads):
 
 ```
 Groceries
@@ -121,6 +126,8 @@ accounts:
     format: "Format B"
   - name: "Citi Plus"
     format: "Format C"
+  - name: "Manual Entry"
+    format: "Format F"
 ```
 
 The `format` value must match a key in `app.py`'s `PARSERS` dict. The loader validates this at startup.
@@ -169,11 +176,26 @@ Generated automatically from `mapping.xlsx`. Don't edit by hand — your changes
 9. (Optionally) edit `mapping.xlsx` to add new substring rules for repeating merchants
 10. Click **Compile** again — both layers pick up your edits
 
+**Manual entries (Format F):**
+
+Format F lets you upload an xlsx file in the shape of the categorised export. Two use cases:
+
+- **Manual statements** — hand-typed transactions for cash spending or accounts without a usable export. Required columns: `date`, `description`, `amount`. Optional: `category`, `account`.
+- **Round-trip** — re-import a previously downloaded categorised file (for archived state or after editing categories in Excel).
+
+If a row's `category` is filled in, it's treated as pre-categorised and bypasses matching. Blank-category rows go through normal substring/history matching.
+
+If the file includes an `account` column, those values override the per-file dropdown selection. Unfamiliar account names (not in `accounts.yaml`) surface a warning but are still kept.
+
+**Sharing snapshots:**
+
+The HTML snapshot download produces a single self-contained file with the chart and a filterable transaction table. Open in any modern browser; no server needed. Plotly's chart loads from CDN (small file, needs internet to render the chart); the table and filters work fully offline.
+
 ## Adding a new statement format
 
 When a new bank or card uses a structurally different export:
 
-1. Create `parsers/format_f.py` exposing a `parse(file_bytes, filename) -> pd.DataFrame` function returning columns `date`, `description`, `amount`, `source_file`. Amounts must be signed (positive = spend, negative = refund/credit) — adjust inside the parser if your bank uses a different convention.
+1. Create `parsers/format_g.py` (or whatever letter is next) exposing a `parse(file_bytes, filename) -> pd.DataFrame` function returning columns `date`, `description`, `amount`, `source_file`. Amounts must be signed (positive = spend, negative = refund/credit) — adjust inside the parser if your bank uses a different convention.
 
 2. Register it in the `PARSERS` dict at the top of `app.py`:
 
@@ -181,7 +203,7 @@ When a new bank or card uses a structurally different export:
    PARSERS = {
        "Format A": parse_format_a,
        # ...
-       "Format F": parse_format_f,
+       "Format G": parse_format_g,
    }
    ```
 
@@ -193,6 +215,10 @@ The dashboard picks up the new option automatically. See the existing parsers fo
 
 - **v1.0.0** — first stable release; all five parsers, two-layer categorisation, full feature set
 - **v1.0.1** — Format B accepts CSV in addition to .xlsx (with multi-line description normalisation)
+- **v1.0.2** — fix: handle ragged OCBC CSVs (different field counts per line); extend Format E header scan to 300 rows. See `RELEASE_NOTES_v1.0.2.md`
+- **v1.0.3** — fix: categorised Excel download now matches the dashboard view (exclusions applied)
+- **v1.1.0** — feat: Format F parser for manual entries and round-trip of the categorised export
+- **v1.2.0** — feat: HTML snapshot download — self-contained, filterable, shareable
 
 See [GitHub Releases](https://github.com/snowleopard-spec/spending_review/releases) for full notes.
 
@@ -200,5 +226,6 @@ See [GitHub Releases](https://github.com/snowleopard-spec/spending_review/releas
 
 - All processing happens locally — no external API calls in the core pipeline.
 - The entire `config/` directory is gitignored, so mapping tables, account names, transaction history, and category lists never leave your machine.
-- Statement files exist only in browser memory while the app is running, and on disk only if you explicitly download the output Excel files.
+- Statement files exist only in browser memory while the app is running, and on disk only if you explicitly download the output Excel or HTML files.
+- The HTML snapshot contains real transaction data — review before sharing.
 - A fresh clone of this repository contains no transaction data, mapping data, or account names.
