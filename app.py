@@ -635,8 +635,10 @@ if st.session_state.compiled is not None:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
-    # Downloads use df_full so excluded categories are still in the output —
-    # excluded means "hidden from dashboard", not "deleted from data".
+    # Categorised download uses df (matches the dashboard view: excluded
+    # categories filtered out). Unmapped download uses df_full so excluded
+    # categories that happen to be unmapped still appear — unmapped output
+    # is for category-table maintenance, where excluded rows still matter.
     # Account is the friendly label; source_file kept for traceability.
     download_cols = ["date", "description", "amount", "category", "account",
                      "matched_pattern", "source_file"]
@@ -649,7 +651,7 @@ if st.session_state.compiled is not None:
     with d1:
         st.download_button(
             "Download categorised (Excel)",
-            data=to_excel_bytes(df_full[download_cols]),
+            data=to_excel_bytes(df[download_cols]),
             file_name=f"spending_categorised_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
@@ -694,3 +696,5 @@ if st.session_state.compiled is not None:
 
 else:
     st.info("Upload one or more statement files and click **Compile** to begin.")
+
+
