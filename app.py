@@ -17,6 +17,7 @@ from categories import load_categories
 from accounts import load_accounts
 from transaction_history import load_history_mapping, append_to_history, DEFAULT_PATH as HISTORY_PATH
 from build_mapping import build_mapping_if_changed
+from html_export import build_html
 from parsers.format_a import parse as parse_format_a
 from parsers.format_b import parse as parse_format_b
 from parsers.format_c import parse as parse_format_c
@@ -675,7 +676,7 @@ if st.session_state.compiled is not None:
         ["date", "description", "amount", "account"]
     ].reset_index(drop=True)
 
-    d1, d2, d3 = st.columns(3)
+    d1, d2, d3, d4 = st.columns(4)
     with d1:
         st.download_button(
             "Download categorised (Excel)",
@@ -695,6 +696,23 @@ if st.session_state.compiled is not None:
             help="Standalone snapshot of unmapped rows — does not modify transaction_history.xlsx.",
         )
     with d3:
+        # HTML snapshot mirrors the dashboard view (df, not df_full).
+        # Filename uses the date range so recipients know the period at a glance.
+        html_filename = (
+            f"spending_snapshot_{start_date.isoformat()}_{end_date.isoformat()}.html"
+        )
+        st.download_button(
+            "Download HTML snapshot",
+            data=build_html(df, start_date, end_date),
+            file_name=html_filename,
+            mime="text/html",
+            type="secondary",
+            help=(
+                "Self-contained HTML file with chart and filterable table. "
+                "Contains real transaction data — review before sharing."
+            ),
+        )
+    with d4:
         if st.button(
             "Append unmapped to history",
             type="secondary",
