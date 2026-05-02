@@ -26,7 +26,7 @@ A local Streamlit dashboard for categorising credit card and bank account transa
 | Format | Description | File type |
 |---|---|---|
 | Format A | Credit card export with signed amounts | `.xlsx` |
-| Format B | Bank account export with separate Withdrawals/Deposits columns | `.xlsx` |
+| Format B | Bank account export with separate Withdrawals/Deposits columns | `.xlsx`, `.csv` |
 | Format C | Legacy bank statement (BIFF format, "DD Mon YYYY" dates) | `.xls` |
 | Format D | Headerless bank CSV with sign flip and comma-thousands amounts | `.csv` |
 | Format E | Bank CSV with buried header, S$ currency prefix, abbreviated dates | `.csv` |
@@ -188,6 +188,13 @@ When a new bank or card uses a structurally different export:
 3. Add an entry to `accounts.yaml` referencing the new format key.
 
 The dashboard picks up the new option automatically. See the existing parsers for patterns: header detection by name, format-specific date parsing, defensive type coercion that drops rows that fail to parse.
+
+## Releases
+
+- **v1.0.0** — first stable release; all five parsers, two-layer categorisation, full feature set
+- **v1.0.1** — Format B accepts CSV in addition to .xlsx (with multi-line description normalisation)
+
+See [GitHub Releases](https://github.com/snowleopard-spec/spending_review/releases) for full notes.
 
 ## Privacy
 
