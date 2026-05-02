@@ -18,6 +18,7 @@ fields) that we collapse to single-line at parse time.
 Header detection is format-specific: each parser knows its own column names.
 """
 
+import csv
 import io
 import re
 import warnings
@@ -40,17 +41,52 @@ def _normalise(s) -> str:
     return text
 
 
+def _rectangularise_csv(file_bytes: bytes) -> io.StringIO:
+    """
+    Use the stdlib csv module (which respects quoted fields and embedded
+    newlines) to parse the raw bytes, then re-emit as a rectangular CSV
+    where every row has the same number of fields.
+
+    Necessary for OCBC online-banking exports where:
+    - Pre-header metadata rows have fewer fields than transaction rows
+    - Some transaction rows have more fields than the header (extra
+      trailing commas, or commas inside descriptions that the bank
+      didn't quote consistently)
+
+    Without this, pandas locks in the column count from line 1 and
+    errors on any wider row.
+    """
+    text = file_bytes.decode("utf-8-sig", errors="replace")
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+
+    if not rows:
+        return io.StringIO("")
+
+    max_fields = max(len(row) for row in rows)
+    padded = [row + [""] * (max_fields - len(row)) for row in rows]
+
+    out = io.StringIO()
+    writer = csv.writer(out, quoting=csv.QUOTE_MINIMAL)
+    writer.writerows(padded)
+    out.seek(0)
+    return out
+
+
 def _read_raw(file_bytes: bytes, filename: str, header) -> pd.DataFrame:
     """
     Read the file using the appropriate engine for its extension.
     Returns a DataFrame with `header` interpretation passed through.
+
+    For CSVs, pre-rectangularises ragged rows (see _rectangularise_csv).
     """
     ext = Path(filename).suffix.lower()
-    buf = io.BytesIO(file_bytes)
     try:
         if ext == ".csv":
+            buf = _rectangularise_csv(file_bytes)
             return pd.read_csv(buf, header=header, dtype=object)
         # default Excel handling for .xlsx, .xls, anything else
+        buf = io.BytesIO(file_bytes)
         return pd.read_excel(buf, header=header, dtype=object)
     except Exception as e:
         kind = "CSV" if ext == ".csv" else "Excel"

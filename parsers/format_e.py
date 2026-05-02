@@ -18,7 +18,7 @@ import warnings
 import pandas as pd
 
 REQUIRED_HEADERS = {"date", "description", "money in/out"}
-MAX_HEADER_SCAN_ROWS = 60  # this format has ~30 metadata rows
+MAX_HEADER_SCAN_ROWS = 300  # this format has ~30 metadata rows
 
 # Strip S$ prefix and thousands separators. Sign sits before "S$" in this
 # format (e.g. "-S$9.50"), so a simple replace preserves it.
